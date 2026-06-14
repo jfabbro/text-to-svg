@@ -131,8 +131,6 @@ export default function Home() {
   const [letterSpacing, setLetterSpacing] = useState(0)
   const [letterSpacingStr, setLetterSpacingStr] = useState('0')
   const [ligatures, setLigatures] = useState(true)
-  const [underline, setUnderline] = useState(false)
-  const [strikethrough, setStrikethrough] = useState(false)
   const [fillRule, setFillRule] = useState<FillRule>('nonzero')
   const [dxfUnits, setDxfUnits] = useState('mm')
 
@@ -239,13 +237,7 @@ export default function Home() {
       }
       if (!isFinite(bx1)) return null
 
-      const scale = fontSize / ((font.unitsPerEm as number) ?? 1000)
-      const underlineY = -((font.tables?.post?.underlinePosition as number) ?? -100) * scale
-      const underlineH = Math.max(1, ((font.tables?.post?.underlineThickness as number) ?? 50) * scale)
-      const strikeY = -((font.tables?.os2?.sStrikeoutPosition as number) ?? 300) * scale
-      const strikeH = Math.max(1, ((font.tables?.os2?.sStrikeoutSize as number) ?? 50) * scale)
-
-      return { pathDataList, bx1, by1, bx2, by2, underlineY, underlineH, strikeY, strikeH }
+      return { pathDataList, bx1, by1, bx2, by2 }
     } catch {
       return null
     }
@@ -272,16 +264,8 @@ export default function Home() {
   // Cheap: only assembles SVG string — reruns on style/decoration changes, not path recomputation
   const svgString = useMemo(() => {
     if (!pathsData) return ''
-    const { pathDataList, bx1, bx2, underlineY, underlineH, strikeY, strikeH } = pathsData
-    let { by1, by2 } = pathsData
-
-    const decorRects: { y: number; h: number }[] = []
-    if (underline) decorRects.push({ y: underlineY - underlineH / 2, h: underlineH })
-    if (strikethrough) decorRects.push({ y: strikeY - strikeH / 2, h: strikeH })
-    for (const d of decorRects) {
-      by1 = Math.min(by1, d.y)
-      by2 = Math.max(by2, d.y + d.h)
-    }
+    const { pathDataList, bx1, bx2 } = pathsData
+    const { by1, by2 } = pathsData
 
     const sw = parseFloat(strokeWidth) || 0
     const x1 = bx1 - sw / 2
@@ -298,22 +282,18 @@ export default function Home() {
       strokeEnabled ? `stroke-width="${strokeWidth}"` : '',
     ].filter(Boolean).join(' ')
 
-    const decorFill = filled ? fill : (strokeEnabled ? stroke : fill)
     const pathEls = pathDataList
       .map((d: string, i: number) => `  <path${separate ? ` id="g${i}"` : ''} d="${d}" ${pathAttrs}/>`)
       .join('\n')
-    const decorEls = decorRects
-      .map(d => `  <rect x="${bx1}" y="${d.y}" width="${bx2 - bx1}" height="${d.h}" fill="${decorFill}"/>`)
-      .join('\n')
 
-    let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}${decorEls ? '\n' + decorEls : ''}\n</svg>`
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}\n</svg>`
 
     if (animationEnabled) {
       const css = buildAnimationCSS(animationType, animationSpeed, animationPaused, fill)
       svg = svg.replace(/<svg([^>]*)>/, `<svg$1 class="animated-svg">${css}`)
     }
     return svg
-  }, [pathsData, separate, filled, fill, stroke, strokeWidth, strokeEnabled, fillRule, animationEnabled, animationType, animationSpeed, animationPaused, underline, strikethrough])
+  }, [pathsData, separate, filled, fill, stroke, strokeWidth, strokeEnabled, fillRule, animationEnabled, animationType, animationSpeed, animationPaused])
 
   const previewSvg = useMemo(() => {
     if (!svgString) return ''
@@ -505,16 +485,6 @@ export default function Home() {
               </>
             )
           })()}
-          <button
-            title="Underline"
-            onClick={() => setUnderline(!underline)}
-            className={`w-9 h-9 underline border rounded text-sm transition-colors ${underline ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-          >U</button>
-          <button
-            title="Strikethrough"
-            onClick={() => setStrikethrough(!strikethrough)}
-            className={`w-9 h-9 line-through border rounded text-sm transition-colors ${strikethrough ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-          >S</button>
         </div>
 
         {selectedFont && !customFont && (
