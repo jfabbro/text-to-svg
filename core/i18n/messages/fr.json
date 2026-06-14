@@ -12,6 +12,8 @@
     "customFont": "Police personnalisée",
     "customFontOptional": "(optionnel)",
     "fontVariant": "Variante de police",
+    "fontStyle": "Style",
+    "fontWeight": "Graisse",
     "text": "Texte",
     "textPlaceholder": "Entrez le texte à convertir",
     "fontSize": "Taille de police",

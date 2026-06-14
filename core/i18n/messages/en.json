@@ -12,6 +12,8 @@
     "customFont": "Custom Font",
     "customFontOptional": "(optional)",
     "fontVariant": "Font Variant",
+    "fontStyle": "Style",
+    "fontWeight": "Font Weight",
     "text": "Text",
     "textPlaceholder": "Enter text to convert",
     "fontSize": "Font Size",

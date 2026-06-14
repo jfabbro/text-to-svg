@@ -12,6 +12,8 @@
     "customFont": "自定义字体",
     "customFontOptional": "(可选)",
     "fontVariant": "字体变体",
+    "fontStyle": "样式",
+    "fontWeight": "字重",
     "text": "文本",
     "textPlaceholder": "输入要转换的文本",
     "fontSize": "字体大小",

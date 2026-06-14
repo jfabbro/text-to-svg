@@ -86,6 +86,28 @@ function buildAnimationCSS(type: string, speed: string, paused: boolean, fillCol
   return `<style>${config.css(duration, playState, fillColor)}</style>`
 }
 
+function parseVariant(variant: string): { weight: number; italic: boolean } {
+  if (variant === 'regular') return { weight: 400, italic: false }
+  if (variant === 'italic') return { weight: 400, italic: true }
+  const italic = variant.endsWith('italic')
+  const weight = parseInt(italic ? variant.slice(0, -6) : variant) || 400
+  return { weight, italic }
+}
+
+function buildVariantKey(weight: number, italic: boolean): string {
+  if (weight === 400) return italic ? 'italic' : 'regular'
+  return italic ? `${weight}italic` : `${weight}`
+}
+
+function findClosestVariant(variants: string[], weight: number, italic: boolean): string {
+  const key = buildVariantKey(weight, italic)
+  if (variants.includes(key)) return key
+  const parsed = variants.map(v => ({ v, ...parseVariant(v) }))
+  const sameItalic = parsed.filter(x => x.italic === italic)
+  const pool = sameItalic.length ? sameItalic : parsed
+  return pool.reduce((a, b) => Math.abs(a.weight - weight) <= Math.abs(b.weight - weight) ? a : b).v
+}
+
 export default function Home() {
   const t = useTranslations()
   const [selectedFont, setSelectedFont] = useState<GoogleFontItem | null>({
@@ -116,6 +138,8 @@ export default function Home() {
   const [letterSpacing, setLetterSpacing] = useState(0)
   const [letterSpacingStr, setLetterSpacingStr] = useState('0')
   const [ligatures, setLigatures] = useState(true)
+  const [underline, setUnderline] = useState(false)
+  const [strikethrough, setStrikethrough] = useState(false)
   const [fillRule, setFillRule] = useState<FillRule>('evenodd')
   const [dxfUnits, setDxfUnits] = useState('mm')
 
@@ -134,6 +158,13 @@ export default function Home() {
     const timer = setTimeout(() => setDebouncedText(text), 200)
     return () => clearTimeout(timer)
   }, [text])
+
+  const { weight: currentWeight, italic: currentItalic } = parseVariant(selectedVariant)
+  const availableWeights = useMemo(() => {
+    if (!selectedFont) return [400]
+    const ws = new Set((selectedFont.variants ?? []).map(v => parseVariant(v).weight))
+    return Array.from(ws).sort((a, b) => a - b)
+  }, [selectedFont])
 
   // 使用 useMemo 缓存字体加载
   const fontUrl = useMemo(() => {
@@ -234,16 +265,38 @@ export default function Home() {
 
       if (!pathDataList.length) return ''
 
-      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+      let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity
       for (const p of glyphPaths) {
         const bb = p.getBoundingBox()
-        if (isFinite(bb.x1)) { x1 = Math.min(x1, bb.x1); x2 = Math.max(x2, bb.x2) }
-        if (isFinite(bb.y1)) { y1 = Math.min(y1, bb.y1); y2 = Math.max(y2, bb.y2) }
+        if (isFinite(bb.x1)) { bx1 = Math.min(bx1, bb.x1); bx2 = Math.max(bx2, bb.x2) }
+        if (isFinite(bb.y1)) { by1 = Math.min(by1, bb.y1); by2 = Math.max(by2, bb.y2) }
       }
-      if (!isFinite(x1)) return ''
+      if (!isFinite(bx1)) return ''
+
+      // Decorations: underline / strikethrough
+      const scale = fontSize / ((font.unitsPerEm as number) ?? 1000)
+      const decorFill = filled ? fill : (strokeEnabled ? stroke : fill)
+      const decorRects: { y: number; h: number }[] = []
+      if (underline) {
+        const uy = -((font.tables?.post?.underlinePosition as number) ?? -100) * scale
+        const uh = Math.max(1, ((font.tables?.post?.underlineThickness as number) ?? 50) * scale)
+        decorRects.push({ y: uy - uh / 2, h: uh })
+      }
+      if (strikethrough) {
+        const sy = -((font.tables?.os2?.sStrikeoutPosition as number) ?? 300) * scale
+        const sh = Math.max(1, ((font.tables?.os2?.sStrikeoutSize as number) ?? 50) * scale)
+        decorRects.push({ y: sy - sh / 2, h: sh })
+      }
+      for (const d of decorRects) {
+        by1 = Math.min(by1, d.y)
+        by2 = Math.max(by2, d.y + d.h)
+      }
 
       const sw = parseFloat(strokeWidth) || 0
-      x1 -= sw / 2; y1 -= sw / 2; x2 += sw / 2; y2 += sw / 2
+      const x1 = bx1 - sw / 2
+      const y1 = by1 - sw / 2
+      const x2 = bx2 + sw / 2
+      const y2 = by2 + sw / 2
       const w = x2 - x1
       const h = y2 - y1
 
@@ -252,13 +305,16 @@ export default function Home() {
         `fill-rule="${fillRule}"`,
         strokeEnabled ? `stroke="${stroke}"` : '',
         strokeEnabled ? `stroke-width="${strokeWidth}"` : '',
-      ].join(' ')
+      ].filter(Boolean).join(' ')
 
       const pathEls = pathDataList
         .map((d: string, i: number) => `  <path${separate ? ` id="g${i}"` : ''} d="${d}" ${pathAttrs}/>`)
         .join('\n')
+      const decorEls = decorRects
+        .map(d => `  <rect x="${bx1}" y="${d.y}" width="${bx2 - bx1}" height="${d.h}" fill="${decorFill}"/>`)
+        .join('\n')
 
-      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}\n</svg>`
+      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}${decorEls ? '\n' + decorEls : ''}\n</svg>`
 
       if (animationEnabled) {
         const css = buildAnimationCSS(animationType, animationSpeed, animationPaused, fill)
@@ -268,7 +324,7 @@ export default function Home() {
     } catch {
       return ''
     }
-  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing, filled, fill, stroke, strokeWidth, fillRule, animationEnabled, animationType, animationSpeed, animationPaused])
+  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing, filled, fill, stroke, strokeWidth, strokeEnabled, fillRule, animationEnabled, animationType, animationSpeed, animationPaused, underline, strikethrough])
 
   const previewSvg = useMemo(() => {
     if (!svgString) return ''
@@ -297,14 +353,13 @@ export default function Home() {
     toast.success(t('notifications.dxfDownloaded'))
   }
 
-  // 当 selectedFont 变化时，自动切换到 regular 变体
+  // When selectedFont changes, preserve weight/italic preference if variant exists
   useEffect(() => {
     if (!selectedFont) return
-    if (selectedFont.variants && selectedFont.variants.includes('regular')) {
-      setSelectedVariant('regular')
-    } else if (selectedFont.variants && selectedFont.variants.length > 0) {
-      setSelectedVariant(selectedFont.variants[0])
-    }
+    const variants = selectedFont.variants ?? []
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setSelectedVariant(findClosestVariant(variants, currentWeight, currentItalic))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFont])
 
   useEffect(() => {
@@ -432,24 +487,62 @@ export default function Home() {
         />
       </div>
       
-      {/* 字体变体选择器 */}
-      {selectedFont && !customFont && (
-        <div className="flex flex-col gap-2">
-          <Label>{t('settings.fontVariant')}</Label>
-          <Select value={selectedVariant} onValueChange={setSelectedVariant}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select font variant" />
-            </SelectTrigger>
-            <SelectContent>
-              {selectedFont.variants?.map((variant: string) => (
-                <SelectItem key={variant} value={variant}>
-                  {variant}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {/* Text style: B / I / U / S + weight */}
+      <div className="flex flex-col gap-3">
+        <Label>{t('settings.fontStyle')}</Label>
+        <div className="flex items-center gap-2">
+          {selectedFont && !customFont && (() => {
+            const variants = selectedFont.variants ?? []
+            const hasBold = variants.some(v => parseVariant(v).weight >= 700)
+            const hasItalic = variants.some(v => parseVariant(v).italic)
+            const boldDisabled = currentWeight < 700 && !hasBold
+            const italicDisabled = !currentItalic && !hasItalic
+            return (
+              <>
+                <button
+                  title="Bold"
+                  disabled={boldDisabled}
+                  onClick={() => setSelectedVariant(findClosestVariant(variants, currentWeight >= 700 ? 400 : 700, currentItalic))}
+                  className={`w-9 h-9 font-bold border rounded text-sm transition-colors ${currentWeight >= 700 ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'} ${boldDisabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+                >B</button>
+                <button
+                  title="Italic"
+                  disabled={italicDisabled}
+                  onClick={() => setSelectedVariant(findClosestVariant(variants, currentWeight, !currentItalic))}
+                  className={`w-9 h-9 italic border rounded text-sm transition-colors ${currentItalic ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'} ${italicDisabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+                >I</button>
+              </>
+            )
+          })()}
+          <button
+            title="Underline"
+            onClick={() => setUnderline(!underline)}
+            className={`w-9 h-9 underline border rounded text-sm transition-colors ${underline ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+          >U</button>
+          <button
+            title="Strikethrough"
+            onClick={() => setStrikethrough(!strikethrough)}
+            className={`w-9 h-9 line-through border rounded text-sm transition-colors ${strikethrough ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+          >S</button>
         </div>
-      )}
+
+        {selectedFont && !customFont && (
+          <>
+            <Label>{t('settings.fontWeight')}</Label>
+            <Select
+              value={String(currentWeight)}
+              onValueChange={v => setSelectedVariant(findClosestVariant(selectedFont.variants ?? [], Number(v), currentItalic))}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {availableWeights.map(w => (
+                  <SelectItem key={w} value={String(w)}>{w}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </>
+        )}
+      </div>
       
       <div className="flex flex-col gap-2">
         <Label htmlFor="text">
