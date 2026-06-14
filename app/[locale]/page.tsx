@@ -6,12 +6,11 @@ import { Button } from '@/core/ui/button'
 import { Textarea } from '@/core/ui/textarea'
 import { Label } from '@/core/ui/label'
 import { GoogleFontSelector, GoogleFontItem } from './_components/GoogleFontSelector'
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import opentype from 'opentype.js'
 import makerjs from 'makerjs'
 import { Switch } from '@/core/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/core/ui/select'
-import debounce from 'lodash/debounce'
 import { toast } from 'sonner'
 import { ScrollArea } from '@/core/ui/scroll-area'
 import { CustomFontUploader } from './_components/CustomFontUploader'
@@ -21,6 +20,71 @@ import { Header } from './_components/Header'
 import { useTranslations } from 'next-intl'
 
 type FillRule = 'nonzero' | 'evenodd';
+
+const RECOMMEND_FONTS = ['Mea Culpa', 'Lily Script One', 'Kapakana', 'Protest Riot', 'Sonsie One', 'Pacifico', 'Sofadi One', 'Risque', 'Oooh Baby']
+const RECOMMEND_TEXT_FONTS = ['Roboto', 'Varela Round', 'Noto Sans Nabataean', 'Crimson Text', 'Oxygen', 'Overpass']
+const RECOMMEND_TOOLS = [
+  { title: 'Personal Blog', href: 'https://jiuran.fun' },
+  { title: 'AI Answer generator', href: 'https://aianswergenerate.com' },
+]
+
+const ANIMATION_CONFIGS = {
+  signature: {
+    duration: { slow: '6s', normal: '3s', fast: '1.5s' },
+    css: (d: string, p: string, c: string) => `
+      .animated-svg path {
+        stroke-dasharray: 2400; stroke-dashoffset: 2400; fill: transparent;
+        animation: drawSignature ${d} linear infinite both; animation-play-state: ${p};
+        stroke-width: 2px; stroke: ${c};
+      }
+      @keyframes drawSignature {
+        0% { stroke-dashoffset: 2400; } 10% { fill: transparent; }
+        25%, 85% { stroke-dashoffset: 0; fill: ${c}; }
+        95%, to { stroke-dashoffset: 2400; fill: transparent; }
+      }`,
+  },
+  draw: {
+    duration: { slow: '6s', normal: '3s', fast: '1.5s' },
+    css: (d: string, p: string, c: string) => `
+      .animated-svg path {
+        stroke-dasharray: 1000; stroke-dashoffset: 1000; stroke: ${c};
+        animation: draw ${d} ease-in-out infinite; animation-play-state: ${p};
+      }
+      @keyframes draw {
+        0% { stroke-dashoffset: 1000; } 50% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -1000; }
+      }`,
+  },
+  'fade-in': {
+    duration: { slow: '6s', normal: '3s', fast: '1.5s' },
+    css: (d: string, p: string, c: string) => `
+      .animated-svg path {
+        opacity: 0; fill: ${c};
+        animation: fadeIn ${d} ease-in-out infinite; animation-play-state: ${p};
+      }
+      @keyframes fadeIn {
+        0% { opacity: 0; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); }
+        100% { opacity: 0; transform: scale(0.8); }
+      }`,
+  },
+  pulse: {
+    duration: { slow: '6s', normal: '3s', fast: '1.5s' },
+    css: (d: string, p: string, c: string) => `
+      .animated-svg path {
+        fill: ${c}; animation: pulse ${d} ease-in-out infinite; animation-play-state: ${p};
+      }
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.05); opacity: 0.8; }
+      }`,
+  },
+}
+
+function buildAnimationCSS(type: string, speed: string, paused: boolean, fillColor: string) {
+  const config = ANIMATION_CONFIGS[type as keyof typeof ANIMATION_CONFIGS]
+  if (!config) return ''
+  const duration = config.duration[speed as keyof typeof config.duration]
+  const playState = paused ? 'paused' : 'running'
+  return `<style>${config.css(duration, playState, fillColor)}</style>`
+}
 
 export default function Home() {
   const t = useTranslations()
@@ -36,11 +100,11 @@ export default function Home() {
   const [text, setText] = useState('Nexus')
   const [fontSize, setFontSize] = useState(50)
   const [stroke, setStroke] = useState('#000000')
-  const [strokeWidth, setStrokeWidth] = useState('0.25mm')
+  const [strokeWidth, setStrokeWidth] = useState('0')
+  const [strokeEnabled, setStrokeEnabled] = useState(false)
   const [fill, setFill] = useState('#000000')
-  const [svgPath, setSvgPath] = useState<string>('')
-  const [dxfPath, setDxfPath] = useState<string>('')
-  const [loadingFont] = useState(false)
+  const strokeTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const fillTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const [currentFont, setCurrentFont] = useState<opentype.Font | null>(null)
   
   // 新增配置项
@@ -49,6 +113,9 @@ export default function Home() {
   const [kerning, setKerning] = useState(true)
   const [separate, setSeparate] = useState(false)
   const [bezierAccuracy, setBezierAccuracy] = useState(0.5)
+  const [letterSpacing, setLetterSpacing] = useState(0)
+  const [letterSpacingStr, setLetterSpacingStr] = useState('0')
+  const [ligatures, setLigatures] = useState(true)
   const [fillRule, setFillRule] = useState<FillRule>('evenodd')
   const [dxfUnits, setDxfUnits] = useState('mm')
 
@@ -58,132 +125,16 @@ export default function Home() {
   const [animationSpeed, setAnimationSpeed] = useState('normal')
   const [animationPaused, setAnimationPaused] = useState(false)
 
-  // 动画配置
-  const animationConfigs = {
-    signature: {
-      duration: {
-        slow: '6s',
-        normal: '3s',
-        fast: '1.5s'
-      },
-      css: (speedDuration: string, playState: string, fillColor: string) => `
-        .animated-svg path {
-          stroke-dasharray: 2400;
-          stroke-dashoffset: 2400;
-          fill: transparent;
-          animation: drawSignature ${speedDuration} linear infinite both;
-          animation-play-state: ${playState};
-          stroke-width: 2px;
-          stroke: ${fillColor};
-        }
-        @keyframes drawSignature {
-          0% { stroke-dashoffset: 2400; }
-          10% { fill: transparent; }
-          25%, 85% { stroke-dashoffset: 0; fill: ${fillColor}; }
-          95%, to { stroke-dashoffset: 2400; fill: transparent; }
-        }
-      `
-    },
-    draw: {
-      duration: {
-        slow: '6s',
-        normal: '3s',
-        fast: '1.5s'
-      },
-      css: (speedDuration: string, playState: string, fillColor: string) => `
-        .animated-svg path {
-          stroke-dasharray: 1000;
-          stroke-dashoffset: 1000;
-          stroke: ${fillColor};
-          animation: draw ${speedDuration} ease-in-out infinite;
-          animation-play-state: ${playState};
-        }
-        @keyframes draw {
-          0% { stroke-dashoffset: 1000; }
-          50% { stroke-dashoffset: 0; }
-          100% { stroke-dashoffset: -1000; }
-        }
-      `
-    },
-    'fade-in': {
-      duration: {
-        slow: '6s',
-        normal: '3s',
-        fast: '1.5s'
-      },
-      css: (speedDuration: string, playState: string, fillColor: string) => `
-        .animated-svg path {
-          opacity: 0;
-          fill: ${fillColor};
-          animation: fadeIn ${speedDuration} ease-in-out infinite;
-          animation-play-state: ${playState};
-        }
-        @keyframes fadeIn {
-          0% { opacity: 0; transform: scale(0.8); }
-          50% { opacity: 1; transform: scale(1); }
-          100% { opacity: 0; transform: scale(0.8); }
-        }
-      `
-    },
-    pulse: {
-      duration: {
-        slow: '6s',
-        normal: '3s',
-        fast: '1.5s'
-      },
-      css: (speedDuration: string, playState: string, fillColor: string) => `
-        .animated-svg path {
-          fill: ${fillColor};
-          animation: pulse ${speedDuration} ease-in-out infinite;
-          animation-play-state: ${playState};
-        }
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.05); opacity: 0.8; }
-        }
-      `
-    }
-  }
-
-  // 生成动画 CSS
-  const generateAnimationCSS = (type: string, speed: string, paused: boolean, fillColor: string) => {
-    const config = animationConfigs[type as keyof typeof animationConfigs]
-    if (!config) return ''
-    
-    const speedDuration = config.duration[speed as keyof typeof config.duration]
-    const playState = paused ? 'paused' : 'running'
-    
-    return `<style>${config.css(speedDuration, playState, fillColor)}</style>`
-  }
-
   const [fontList, setFontList] = useState<GoogleFontItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
 
-  const recommendFonts = [
-    'Mea Culpa',
-    'Lily Script One',
-    'Kapakana',
-    'Protest Riot',
-    'Sonsie One',
-    'Pacifico', 
-    'Sofadi One',
-    'Risque',
-    'Oooh Baby', 
-  ]
+  const [debouncedText, setDebouncedText] = useState(text)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedText(text), 200)
+    return () => clearTimeout(timer)
+  }, [text])
 
-  const recommendTextFonts = [
-    'Roboto',
-    'Varela Round',
-    'Noto Sans Nabataean',
-    'Crimson Text',
-    'Oxygen',
-    'Overpass'
-  ]
-  const recommendTools = [
-    {title: 'Personal Blog', href: 'https://jiuran.fun'},
-    {title: 'AI Answer generator', href: 'https://aianswergenerate.com'}
-  ]
   // 使用 useMemo 缓存字体加载
   const fontUrl = useMemo(() => {
     if (!selectedFont) return null
@@ -238,85 +189,105 @@ export default function Home() {
     }
   }, [fontUrl, customFont, loadFont])
 
-  // 使用 useCallback 和 debounce 优化 SVG 生成
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const generateSvg = useCallback(
-    debounce(() => {
-      if (!currentFont || !text) {
-        setSvgPath('')
-        return
-      }
-      
-      try {
-        // 使用 makerjs 生成文本模型
-        const textModel = new makerjs.models.Text(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          currentFont as any,
-          text,
-          fontSize,
-          union,
-          false,
-          bezierAccuracy,
-          { kerning }
-        )
-        
-        if (separate) {
-          for (const i in textModel.models) {
-            textModel.models[i].layer = i
-          }
+  const textModel = useMemo((): makerjs.IModel | null => {
+    if (!currentFont || !debouncedText) return null
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const font = currentFont as any
+      const glyphPaths = font.getPaths(debouncedText, 0, 0, fontSize, {
+        kerning,
+        letterSpacing: letterSpacing / fontSize,
+        features: { liga: ligatures, rlig: ligatures },
+      })
+      const combinedModels: { [key: string]: makerjs.IModel } = {}
+      for (let i = 0; i < glyphPaths.length; i++) {
+        const pathData = glyphPaths[i].toPathData(Math.max(1, Math.round(bezierAccuracy * 8)))
+        if (pathData && pathData.trim() !== '') {
+          // fromSVGPathData handles Y-flip (SVG Y-down → makerjs Y-up) internally
+          combinedModels[`g${i}`] = makerjs.importer.fromSVGPathData(pathData)
         }
-        
-        // 生成 SVG
-        const svg = makerjs.exporter.toSVG(textModel, {
-          fill: filled ? fill : undefined,
-          stroke: stroke,
-          strokeWidth: strokeWidth,
-          fillRule: fillRule,
-          scalingStroke: true,
-        })
-        
-        // 生成 DXF
-        const dxf = makerjs.exporter.toDXF(textModel, { 
-          units: dxfUnits,
-          usePOLYLINE: true 
-        })
-        
-        // 处理动画
-        let finalSvg = svg
-        if (animationEnabled && svg) {
-          const animationCSS = generateAnimationCSS(animationType, animationSpeed, animationPaused, fill)
-          finalSvg = svg.replace(
-            /<svg([^>]*)>/,
-            `<svg$1 class="animated-svg">${animationCSS}`
-          )
-        }
-        
-        setSvgPath(finalSvg)
-        setDxfPath(dxf)
-      } catch (error) {
-        console.error('Error generating SVG:', error)
-        setSvgPath('')
       }
-    }, 200),
-    [currentFont, text, fontSize, union, filled, kerning, separate, bezierAccuracy, fill, stroke, strokeWidth, fillRule, dxfUnits, animationEnabled, animationType, animationSpeed, animationPaused]
-  )
-
-  // 监听所有可能影响 SVG 生成的参数变化
-  useEffect(() => {
-    if (!loadingFont) {
-      generateSvg()
+      const model: makerjs.IModel = { models: combinedModels }
+      if (separate) {
+        for (const key in model.models) model.models![key].layer = key
+      }
+      return model
+    } catch {
+      return null
     }
-  }, [generateSvg, loadingFont])
+  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing])
 
-  // 3. 生成 SVG 字符串
   const svgString = useMemo(() => {
-    if (!svgPath) return ''
-    return svgPath
-  }, [svgPath])
+    if (!currentFont || !debouncedText) return ''
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const font = currentFont as any
+      const opts = {
+        kerning,
+        letterSpacing: letterSpacing / fontSize,
+        features: { liga: ligatures, rlig: ligatures },
+      }
+      const glyphPaths = font.getPaths(debouncedText, 0, 0, fontSize, opts)
+      const pathDataList: string[] = glyphPaths
+        .map((p: any) => p.toPathData(Math.max(1, Math.round(bezierAccuracy * 8))))  // eslint-disable-line @typescript-eslint/no-explicit-any
+        .filter((d: string) => d?.trim())
+
+      if (!pathDataList.length) return ''
+
+      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity
+      for (const p of glyphPaths) {
+        const bb = p.getBoundingBox()
+        if (isFinite(bb.x1)) { x1 = Math.min(x1, bb.x1); x2 = Math.max(x2, bb.x2) }
+        if (isFinite(bb.y1)) { y1 = Math.min(y1, bb.y1); y2 = Math.max(y2, bb.y2) }
+      }
+      if (!isFinite(x1)) return ''
+
+      const sw = parseFloat(strokeWidth) || 0
+      x1 -= sw / 2; y1 -= sw / 2; x2 += sw / 2; y2 += sw / 2
+      const w = x2 - x1
+      const h = y2 - y1
+
+      const pathAttrs = [
+        filled ? `fill="${fill}"` : 'fill="none"',
+        `fill-rule="${fillRule}"`,
+        strokeEnabled ? `stroke="${stroke}"` : '',
+        strokeEnabled ? `stroke-width="${strokeWidth}"` : '',
+      ].join(' ')
+
+      const pathEls = pathDataList
+        .map((d: string, i: number) => `  <path${separate ? ` id="g${i}"` : ''} d="${d}" ${pathAttrs}/>`)
+        .join('\n')
+
+      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}\n</svg>`
+
+      if (animationEnabled) {
+        const css = buildAnimationCSS(animationType, animationSpeed, animationPaused, fill)
+        svg = svg.replace(/<svg([^>]*)>/, `<svg$1 class="animated-svg">${css}`)
+      }
+      return svg
+    } catch {
+      return ''
+    }
+  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing, filled, fill, stroke, strokeWidth, fillRule, animationEnabled, animationType, animationSpeed, animationPaused])
+
+  const previewSvg = useMemo(() => {
+    if (!svgString) return ''
+    return svgString.replace('<svg', '<svg style="max-width:100%;max-height:100%;width:auto;height:auto;display:block;"')
+  }, [svgString])
+
+  // DXF export — independent from SVG visual options
+  const dxfString = useMemo(() => {
+    if (!textModel) return ''
+    try {
+      return makerjs.exporter.toDXF(textModel, { units: dxfUnits, usePOLYLINE: true })
+    } catch {
+      return ''
+    }
+  }, [textModel, dxfUnits])
 
   const downloadDxf = () => {
-    if (!dxfPath) return
-    const blob = new Blob([dxfPath], { type: 'application/dxf' })
+    if (!dxfString) return
+    const blob = new Blob([dxfString], { type: 'application/dxf' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -494,6 +465,24 @@ export default function Home() {
         <Input id="size" type="number" value={fontSize} onChange={e => setFontSize(Number(e.target.value))} />
       </div>
 
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="letter-spacing">
+          <h3>{t('settings.letterSpacing')}</h3>
+        </Label>
+        <Input
+          id="letter-spacing"
+          type="text"
+          inputMode="decimal"
+          value={letterSpacingStr}
+          onChange={e => {
+            const val = e.target.value
+            setLetterSpacingStr(val)
+            const num = parseFloat(val)
+            if (!isNaN(num)) setLetterSpacing(num)
+          }}
+        />
+      </div>
+
       <div className="flex flex-col gap-6 my-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="union">
@@ -514,6 +503,13 @@ export default function Home() {
             <h3>{t('settings.kerning')}</h3>
           </Label>
           <Switch id="kerning" checked={kerning} onCheckedChange={setKerning} />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <Label htmlFor="ligatures">
+            <h3>{t('settings.ligatures')}</h3>
+          </Label>
+          <Switch id="ligatures" checked={ligatures} onCheckedChange={setLigatures} />
         </div>
 
         <div className="flex items-center justify-between">
@@ -554,25 +550,49 @@ export default function Home() {
         </Select>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="stroke">
-          <h3>{t('settings.strokeColor')}</h3>
+      <div className="flex items-center justify-between">
+        <Label htmlFor="stroke-enabled">
+          <h3>{t('settings.strokeOutline')}</h3>
         </Label>
-        <Input id="stroke" type="color" value={stroke} onChange={e => setStroke(e.target.value)} />
+        <Switch
+          id="stroke-enabled"
+          checked={strokeEnabled}
+          onCheckedChange={(checked) => {
+            setStrokeEnabled(checked)
+            setStrokeWidth(checked ? '0.25' : '0')
+          }}
+        />
       </div>
 
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="stroke-width">
-          <h3>{t('settings.strokeWidth')}</h3>
-        </Label>
-        <Input id="stroke-width" type="text" value={strokeWidth} onChange={e => setStrokeWidth(e.target.value)} />
-      </div>
+      {strokeEnabled && (
+        <>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="stroke-width">
+              <h3>{t('settings.strokeWidth')}</h3>
+            </Label>
+            <Input id="stroke-width" type="text" value={strokeWidth} onChange={e => setStrokeWidth(e.target.value)} />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="stroke">
+              <h3>{t('settings.strokeColor')}</h3>
+            </Label>
+            <Input id="stroke" type="color" defaultValue={stroke} onChange={e => {
+              clearTimeout(strokeTimerRef.current)
+              strokeTimerRef.current = setTimeout(() => setStroke(e.target.value), 200)
+            }} />
+          </div>
+        </>
+      )}
 
       <div className="flex flex-col gap-2">
         <Label htmlFor="fill">
           <h3>{t('settings.fillColor')}</h3>
         </Label>
-        <Input id="fill" type="color" value={fill} onChange={e => setFill(e.target.value)} />
+        <Input id="fill" type="color" defaultValue={fill} onChange={e => {
+          clearTimeout(fillTimerRef.current)
+          fillTimerRef.current = setTimeout(() => setFill(e.target.value), 200)
+        }} />
       </div>
 
       <div className="flex flex-col gap-2">
@@ -598,7 +618,7 @@ export default function Home() {
   )
 
   return (
-    <div className="flex min-h-screen overflow-hidden">
+    <div className="flex min-h-screen">
       {/* 移动端菜单按钮 */}
       <div className="lg:hidden fixed top-[80px] right-4 z-50">
         <Sheet open={isOpen} onOpenChange={setIsOpen}>
@@ -608,14 +628,16 @@ export default function Home() {
             </Button>
           </SheetTrigger>
           <SheetContent side="right" className="w-full sm:max-w-sm p-0">
-            <ScrollArea className="h-full p-6">
-              <SheetHeader className="mb-6 p-0">
-                <SheetTitle>{t('settings.title')}</SheetTitle>
-                <SheetDescription>
-                  Customize your text to SVG conversion settings here.
-                </SheetDescription>
-              </SheetHeader>
-              {renderSettings()}
+            <ScrollArea className="h-full">
+              <div className="p-6">
+                <SheetHeader className="mb-6 p-0">
+                  <SheetTitle>{t('settings.title')}</SheetTitle>
+                  <SheetDescription>
+                    Customize your text to SVG conversion settings here.
+                  </SheetDescription>
+                </SheetHeader>
+                {renderSettings()}
+              </div>
             </ScrollArea>
           </SheetContent>
         </Sheet>
@@ -623,8 +645,10 @@ export default function Home() {
 
       {/* 桌面端侧边栏 */}
       <aside className="hidden lg:block w-full max-w-sm bg-muted p-0 flex flex-col gap-0 border-r h-screen">
-        <ScrollArea className="h-screen p-6">
-          {renderSettings()}
+        <ScrollArea className="h-screen">
+          <div className="p-6">
+            {renderSettings()}
+          </div>
         </ScrollArea>
       </aside>
 
@@ -638,10 +662,10 @@ export default function Home() {
               <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
                 <div className="flex-1">
                   <h2 className="text-lg font-bold mb-4">{t('preview.title')}</h2>
-                  <div className="bg-white border rounded-lg h-60 flex items-center justify-center overflow-auto shadow-sm">
-                    {loadingFont ? <span className="text-gray-400">{t('preview.loading')}</span> : (
-                      svgString ? <div dangerouslySetInnerHTML={{ __html: svgString }} /> : <span className="text-gray-400">{t('preview.empty')}</span>
-                    )}
+                  <div className="bg-white border rounded-lg h-60 flex items-center justify-center overflow-hidden shadow-sm p-2">
+                    {previewSvg
+                      ? <div className="w-full h-full flex items-center justify-center" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+                      : <span className="text-gray-400">{t('preview.empty')}</span>}
                   </div>
                 </div>
                 <div className="flex-1">
@@ -678,7 +702,7 @@ export default function Home() {
             <div className="w-full max-w-5xl mt-6 bg-gray-50 border rounded-lg p-4 shadow-sm">
               <h2 className="text-base font-semibold mb-3">{t('recommendations.logoFonts')}</h2>
               <div className="flex flex-wrap gap-3 mb-6">
-                {recommendFonts.map(family => (
+                {RECOMMEND_FONTS.map(family => (
                   <button
                     key={family}
                     className={'px-4 py-2 rounded-lg border hover:bg-muted transition font-bold text-xs'}
@@ -694,7 +718,7 @@ export default function Home() {
               </div>
               <h2 className="text-base font-semibold mb-3">{t('recommendations.textFonts')}</h2>
               <div className="flex flex-wrap gap-3 mb-6">
-                {recommendTextFonts.map(family => (
+                {RECOMMEND_TEXT_FONTS.map(family => (
                   <button
                     key={family}
                     className={'px-4 py-2 rounded-lg border hover:bg-muted transition font-bold text-xs'}
@@ -713,7 +737,7 @@ export default function Home() {
                 {/* 其他工具页脚区 */}
                 <h2 className="text-base font-semibold">{t('recommendations.otherTools')}</h2>
                 <div className="flex flex-wrap gap-3">
-                  {recommendTools.map(tool => (
+                  {RECOMMEND_TOOLS.map(tool => (
                     <a
                       href={tool.href}
                       target="_blank"
