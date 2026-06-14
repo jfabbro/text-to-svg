@@ -110,14 +110,7 @@ function findClosestVariant(variants: string[], weight: number, italic: boolean)
 
 export default function Home() {
   const t = useTranslations()
-  const [selectedFont, setSelectedFont] = useState<GoogleFontItem | null>({
-    family: 'Mea Culpa',
-    variants: ['regular'],
-    files: {
-      regular: 'https://fonts.gstatic.com/s/meaculpa/v6/AMOTz4GcuWbEIuza8jsZms0QW3mqyg.ttf'
-    },
-    menu: 'https://fonts.gstatic.com/s/meaculpa/v6/AMOTz4GcuWbEIuza8jsZms0QW3mqyg.ttf'
-  })
+  const [selectedFont, setSelectedFont] = useState<GoogleFontItem | null>(null)
   const [selectedVariant, setSelectedVariant] = useState<string>('regular')
   const [text, setText] = useState('Nexus')
   const [fontSize, setFontSize] = useState(50)
@@ -140,7 +133,7 @@ export default function Home() {
   const [ligatures, setLigatures] = useState(true)
   const [underline, setUnderline] = useState(false)
   const [strikethrough, setStrikethrough] = useState(false)
-  const [fillRule, setFillRule] = useState<FillRule>('evenodd')
+  const [fillRule, setFillRule] = useState<FillRule>('nonzero')
   const [dxfUnits, setDxfUnits] = useState('mm')
 
   // 动画相关状态
@@ -220,7 +213,8 @@ export default function Home() {
     }
   }, [fontUrl, customFont, loadFont])
 
-  const textModel = useMemo((): makerjs.IModel | null => {
+  // Expensive: font path computation — only reruns when font/text/layout params change
+  const pathsData = useMemo(() => {
     if (!currentFont || !debouncedText) return null
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -230,13 +224,40 @@ export default function Home() {
         letterSpacing: letterSpacing / fontSize,
         features: { liga: ligatures, rlig: ligatures },
       })
+      const pathDataList: string[] = glyphPaths
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((p: any) => p.toPathData(Math.max(1, Math.round(bezierAccuracy * 8))))
+        .filter((d: string) => d?.trim())
+      if (!pathDataList.length) return null
+
+      let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const p of glyphPaths) {
+        const bb = p.getBoundingBox()
+        if (isFinite(bb.x1)) { bx1 = Math.min(bx1, bb.x1); bx2 = Math.max(bx2, bb.x2) }
+        if (isFinite(bb.y1)) { by1 = Math.min(by1, bb.y1); by2 = Math.max(by2, bb.y2) }
+      }
+      if (!isFinite(bx1)) return null
+
+      const scale = fontSize / ((font.unitsPerEm as number) ?? 1000)
+      const underlineY = -((font.tables?.post?.underlinePosition as number) ?? -100) * scale
+      const underlineH = Math.max(1, ((font.tables?.post?.underlineThickness as number) ?? 50) * scale)
+      const strikeY = -((font.tables?.os2?.sStrikeoutPosition as number) ?? 300) * scale
+      const strikeH = Math.max(1, ((font.tables?.os2?.sStrikeoutSize as number) ?? 50) * scale)
+
+      return { pathDataList, bx1, by1, bx2, by2, underlineY, underlineH, strikeY, strikeH }
+    } catch {
+      return null
+    }
+  }, [currentFont, debouncedText, fontSize, kerning, ligatures, bezierAccuracy, letterSpacing])
+
+  // DXF model — reuses pathsData, reruns only when paths or separate changes
+  const textModel = useMemo((): makerjs.IModel | null => {
+    if (!pathsData) return null
+    try {
       const combinedModels: { [key: string]: makerjs.IModel } = {}
-      for (let i = 0; i < glyphPaths.length; i++) {
-        const pathData = glyphPaths[i].toPathData(Math.max(1, Math.round(bezierAccuracy * 8)))
-        if (pathData && pathData.trim() !== '') {
-          // fromSVGPathData handles Y-flip (SVG Y-down → makerjs Y-up) internally
-          combinedModels[`g${i}`] = makerjs.importer.fromSVGPathData(pathData)
-        }
+      for (let i = 0; i < pathsData.pathDataList.length; i++) {
+        combinedModels[`g${i}`] = makerjs.importer.fromSVGPathData(pathsData.pathDataList[i])
       }
       const model: makerjs.IModel = { models: combinedModels }
       if (separate) {
@@ -246,85 +267,53 @@ export default function Home() {
     } catch {
       return null
     }
-  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing])
+  }, [pathsData, separate])
 
+  // Cheap: only assembles SVG string — reruns on style/decoration changes, not path recomputation
   const svgString = useMemo(() => {
-    if (!currentFont || !debouncedText) return ''
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const font = currentFont as any
-      const opts = {
-        kerning,
-        letterSpacing: letterSpacing / fontSize,
-        features: { liga: ligatures, rlig: ligatures },
-      }
-      const glyphPaths = font.getPaths(debouncedText, 0, 0, fontSize, opts)
-      const pathDataList: string[] = glyphPaths
-        .map((p: any) => p.toPathData(Math.max(1, Math.round(bezierAccuracy * 8))))  // eslint-disable-line @typescript-eslint/no-explicit-any
-        .filter((d: string) => d?.trim())
+    if (!pathsData) return ''
+    const { pathDataList, bx1, bx2, underlineY, underlineH, strikeY, strikeH } = pathsData
+    let { by1, by2 } = pathsData
 
-      if (!pathDataList.length) return ''
-
-      let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity
-      for (const p of glyphPaths) {
-        const bb = p.getBoundingBox()
-        if (isFinite(bb.x1)) { bx1 = Math.min(bx1, bb.x1); bx2 = Math.max(bx2, bb.x2) }
-        if (isFinite(bb.y1)) { by1 = Math.min(by1, bb.y1); by2 = Math.max(by2, bb.y2) }
-      }
-      if (!isFinite(bx1)) return ''
-
-      // Decorations: underline / strikethrough
-      const scale = fontSize / ((font.unitsPerEm as number) ?? 1000)
-      const decorFill = filled ? fill : (strokeEnabled ? stroke : fill)
-      const decorRects: { y: number; h: number }[] = []
-      if (underline) {
-        const uy = -((font.tables?.post?.underlinePosition as number) ?? -100) * scale
-        const uh = Math.max(1, ((font.tables?.post?.underlineThickness as number) ?? 50) * scale)
-        decorRects.push({ y: uy - uh / 2, h: uh })
-      }
-      if (strikethrough) {
-        const sy = -((font.tables?.os2?.sStrikeoutPosition as number) ?? 300) * scale
-        const sh = Math.max(1, ((font.tables?.os2?.sStrikeoutSize as number) ?? 50) * scale)
-        decorRects.push({ y: sy - sh / 2, h: sh })
-      }
-      for (const d of decorRects) {
-        by1 = Math.min(by1, d.y)
-        by2 = Math.max(by2, d.y + d.h)
-      }
-
-      const sw = parseFloat(strokeWidth) || 0
-      const x1 = bx1 - sw / 2
-      const y1 = by1 - sw / 2
-      const x2 = bx2 + sw / 2
-      const y2 = by2 + sw / 2
-      const w = x2 - x1
-      const h = y2 - y1
-
-      const pathAttrs = [
-        filled ? `fill="${fill}"` : 'fill="none"',
-        `fill-rule="${fillRule}"`,
-        strokeEnabled ? `stroke="${stroke}"` : '',
-        strokeEnabled ? `stroke-width="${strokeWidth}"` : '',
-      ].filter(Boolean).join(' ')
-
-      const pathEls = pathDataList
-        .map((d: string, i: number) => `  <path${separate ? ` id="g${i}"` : ''} d="${d}" ${pathAttrs}/>`)
-        .join('\n')
-      const decorEls = decorRects
-        .map(d => `  <rect x="${bx1}" y="${d.y}" width="${bx2 - bx1}" height="${d.h}" fill="${decorFill}"/>`)
-        .join('\n')
-
-      let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}${decorEls ? '\n' + decorEls : ''}\n</svg>`
-
-      if (animationEnabled) {
-        const css = buildAnimationCSS(animationType, animationSpeed, animationPaused, fill)
-        svg = svg.replace(/<svg([^>]*)>/, `<svg$1 class="animated-svg">${css}`)
-      }
-      return svg
-    } catch {
-      return ''
+    const decorRects: { y: number; h: number }[] = []
+    if (underline) decorRects.push({ y: underlineY - underlineH / 2, h: underlineH })
+    if (strikethrough) decorRects.push({ y: strikeY - strikeH / 2, h: strikeH })
+    for (const d of decorRects) {
+      by1 = Math.min(by1, d.y)
+      by2 = Math.max(by2, d.y + d.h)
     }
-  }, [currentFont, debouncedText, fontSize, kerning, ligatures, separate, bezierAccuracy, letterSpacing, filled, fill, stroke, strokeWidth, strokeEnabled, fillRule, animationEnabled, animationType, animationSpeed, animationPaused, underline, strikethrough])
+
+    const sw = parseFloat(strokeWidth) || 0
+    const x1 = bx1 - sw / 2
+    const y1 = by1 - sw / 2
+    const x2 = bx2 + sw / 2
+    const y2 = by2 + sw / 2
+    const w = x2 - x1
+    const h = y2 - y1
+
+    const pathAttrs = [
+      filled ? `fill="${fill}"` : 'fill="none"',
+      `fill-rule="${fillRule}"`,
+      strokeEnabled ? `stroke="${stroke}"` : '',
+      strokeEnabled ? `stroke-width="${strokeWidth}"` : '',
+    ].filter(Boolean).join(' ')
+
+    const decorFill = filled ? fill : (strokeEnabled ? stroke : fill)
+    const pathEls = pathDataList
+      .map((d: string, i: number) => `  <path${separate ? ` id="g${i}"` : ''} d="${d}" ${pathAttrs}/>`)
+      .join('\n')
+    const decorEls = decorRects
+      .map(d => `  <rect x="${bx1}" y="${d.y}" width="${bx2 - bx1}" height="${d.h}" fill="${decorFill}"/>`)
+      .join('\n')
+
+    let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x1} ${y1} ${w} ${h}" width="${w}" height="${h}">\n${pathEls}${decorEls ? '\n' + decorEls : ''}\n</svg>`
+
+    if (animationEnabled) {
+      const css = buildAnimationCSS(animationType, animationSpeed, animationPaused, fill)
+      svg = svg.replace(/<svg([^>]*)>/, `<svg$1 class="animated-svg">${css}`)
+    }
+    return svg
+  }, [pathsData, separate, filled, fill, stroke, strokeWidth, strokeEnabled, fillRule, animationEnabled, animationType, animationSpeed, animationPaused, underline, strikethrough])
 
   const previewSvg = useMemo(() => {
     if (!svgString) return ''
@@ -369,11 +358,13 @@ export default function Home() {
     )
       .then((res) => res.json())
       .then((data) => {
-        setFontList(data.items || [])
+        const items: GoogleFontItem[] = data.items || []
+        setFontList(items)
+        const roboto = items.find(f => f.family === 'Roboto')
+        if (roboto) setSelectedFont(roboto)
       })
       .finally(() => {
         setIsLoading(false)
-        loadFont(selectedFont?.files?.regular || '')
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
